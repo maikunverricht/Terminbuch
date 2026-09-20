@@ -408,7 +408,7 @@ html[data-theme="light"]{
 
 <header class="nav">
   <div class="nav-in">
-    <a class="brand" href="https://maikunverricht.github.io/WerkbankUnverricht/"><span class="mark" aria-hidden="true"><svg viewBox="15 5 90 102"><path d="M26,16 V62 A34,34 0 0 0 94,62 V16" fill="none" stroke="currentColor" stroke-width="22" stroke-linecap="round" stroke-linejoin="round"/><circle cx="60" cy="64" r="18.5" fill="var(--amber,#F2B33D)"/></svg></span><span class="hide-sm">Werkbank&nbsp;</span><b>Terminbuch</b></a>
+    <a class="brand" title="Zum Cockpit" href="https://maikunverricht.github.io/Der-Werkzeugkasten/"><span class="mark" aria-hidden="true"><svg viewBox="15 5 90 102"><path d="M26,16 V62 A34,34 0 0 0 94,62 V16" fill="none" stroke="currentColor" stroke-width="22" stroke-linecap="round" stroke-linejoin="round"/><circle cx="60" cy="64" r="18.5" fill="var(--amber,#F2B33D)"/></svg></span><span class="hide-sm">Werkbank&nbsp;</span><b>Terminbuch</b></a>
     <div class="nav-r">
       <button class="filechip" id="fileChip" type="button" data-s="local" title="Datenablage">
         <span class="fdot" aria-hidden="true"></span><span id="fileName">lokal</span>
@@ -469,13 +469,7 @@ html[data-theme="light"]{
 
 <footer class="site">
   <span>© <span id="yr"></span> Maik Unverricht · Terminbuch</span>
-  <span class="f-r">
-    <button class="pill sm" id="icsBtn" type="button">ICS</button>
-    <button class="pill sm" id="exportBtn" type="button">Export</button>
-    <button class="pill sm" id="importBtn" type="button">Import</button>
-    <button class="pill sm" id="srcBtn" type="button">Datenablage</button>
-    <a href="https://maikunverricht.github.io/WerkbankUnverricht/">Werkbank ↗</a>
-  </span>
+  <span class="f-r"><button class="pill sm" id="icsBtn" type="button">ICS</button><button class="pill sm" id="hinwBtn" type="button" aria-pressed="false">Hinweise</button><button class="pill sm" id="srcBtn" type="button">Datenablage</button><a href="https://maikunverricht.github.io/WerkbankUnverricht/">Werkbank ↗</a></span>
 </footer>
 
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
@@ -519,6 +513,12 @@ html[data-theme="light"]{
       <label class="rowlab"><input type="checkbox" id="icsErinnerung" checked> Erinnerungen / Wiedervorlagen</label>
       <label class="rowlab"><input type="checkbox" id="icsFrist"> Fristen aus dem Auftragsstatus</label>
       <label class="rowlab"><input type="checkbox" id="icsMs"> Meilensteine aus dem Auftragsstatus</label>
+      <label>Wecker<select id="icsAlarm">
+        <option value="std1" selected>1 Stunde vorher · ganztägig am Morgen</option>
+        <option value="min15">15 Minuten vorher · ganztägig am Morgen</option>
+        <option value="tag1">1 Tag vorher</option>
+        <option value="aus">kein Wecker</option>
+      </select></label>
       <label>Zeitraum<select id="icsRange">
         <option value="sicht">nur der angezeigte Zeitraum</option>
         <option value="ab">ab heute</option>
@@ -1123,13 +1123,23 @@ html[data-theme="light"]{
   function fussknopf() {
     if (!cfg.fuss) return;
     var f = document.querySelector(cfg.fuss);
-    if (!f) return;
+    if (!f) {
+      /* Manche Werkzeuge rufen start() beim Parsen auf – dann steht die
+         Fußzeile noch nicht. Einmal nachfassen, sobald sie da ist. */
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', fussknopf, { once: true });
+      }
+      return;
+    }
     var b = document.createElement('button');
     b.type = 'button';
     b.className = cfg.fussKlasse || 'pill sm';
     b.textContent = lage && lage.status === 'frei' ? 'Lizenz' : 'Freischalten';
     b.addEventListener('click', dialogAuf);
-    f.insertBefore(b, f.firstChild);
+    /* Vor den letzten Eintrag – der ist in allen Werkzeugen der Verweis
+       nach draußen, und davor gehört der Lizenzknopf hin. */
+    var letzter = f.lastElementChild;
+    if (letzter) f.insertBefore(b, letzter); else f.appendChild(b);
   }
 
   /* ── Tor ───────────────────────────────────────────────── */
@@ -2250,7 +2260,28 @@ function falte(z){
 const kompakt = d => String(d).replace(/[-:]/g, '');
 function stempel(){ return new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, ''); }
 
-function icsBauen(list){
+
+/* ═══════ Wecker ═══════
+   Ein VALARM je Eintrag. Der Kalender auf dem Telefon erinnert dann selbst –
+   ohne Server, ohne offene Seite. Ganztägige Einträge (Wiedervorlagen,
+   Fristen, Meilensteine) beginnen um Mitternacht; ein Wecker „eine Stunde
+   vorher" wäre dort um 23 Uhr am Vortag. Darum bekommen sie einen Wecker am
+   Morgen des Tages – oder, bei „1 Tag vorher", am Morgen davor. */
+const ALARM = {
+  std1:  { zeit:'-PT1H',  ganz:'PT8H',   text:'1 Stunde vorher' },
+  min15: { zeit:'-PT15M', ganz:'PT8H',   text:'15 Minuten vorher' },
+  tag1:  { zeit:'-P1D',   ganz:'-PT16H', text:'1 Tag vorher' }
+};
+function alarmZeilen(e, wahl){
+  const a = ALARM[wahl];
+  if (!a) return [];
+  return ['BEGIN:VALARM', 'ACTION:DISPLAY',
+          'TRIGGER:' + (e.von ? a.zeit : a.ganz),
+          falte('DESCRIPTION:' + icsEsc(e.titel)),
+          'END:VALARM'];
+}
+
+function icsBauen(list, wecker){
   const z = ['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//Werkbank Unverricht//Terminbuch//DE','CALSCALE:GREGORIAN','METHOD:PUBLISH'];
   const ts = stempel();
   list.forEach(e => {
@@ -2277,6 +2308,7 @@ function icsBauen(list){
     if (e.ort) z.push(falte('LOCATION:' + icsEsc(e.ort)));
     z.push(falte('DESCRIPTION:' + icsEsc(besch)));
     z.push('TRANSP:' + (e.art === 'termin' && e.von ? 'OPAQUE' : 'TRANSPARENT'));
+    alarmZeilen(e, wecker).forEach(x => z.push(x));
     z.push('END:VEVENT');
   });
   z.push('END:VCALENDAR');
@@ -2296,7 +2328,7 @@ $('#formIcs').addEventListener('submit', async e => {
     e.preventDefault();
     $('#errIcs').textContent = 'Für diese Auswahl gibt es nichts zu exportieren.'; $('#errIcs').hidden = false; return;
   }
-  const ok = await datei(icsBauen(list), 'terminbuch-' + h + '.ics', 'text/calendar;charset=utf-8', 'Terminbuch');
+  const ok = await datei(icsBauen(list, ($('#icsAlarm') || {}).value || 'aus'), 'terminbuch-' + h + '.ics', 'text/calendar;charset=utf-8', 'Terminbuch');
   if (ok) toast(list.length + ' Einträge als ICS erzeugt');
 });
 
@@ -2345,9 +2377,9 @@ $('#fsOpen').addEventListener('click', fsOpen);
 $('#fsNew').addEventListener('click', fsNew);
 $('#fsDetach').addEventListener('click', fsDetach);
 $('#fsExport').addEventListener('click', exportieren);
-$('#exportBtn').addEventListener('click', exportieren);
+($('#exportBtn') || { addEventListener(){} }).addEventListener('click', exportieren);
 $('#fsImport').addEventListener('click', () => { $('#dlgSrc').close(); $('#ownInput').click(); });
-$('#importBtn').addEventListener('click', () => $('#ownInput').click());
+($('#importBtn') || { addEventListener(){} }).addEventListener('click', () => $('#ownInput').click());
 $('#ownInput').addEventListener('change', async e => {
   const f = e.target.files && e.target.files[0]; if (!f) return;
   try {
@@ -2466,6 +2498,90 @@ async function boot(){
 }
 speicherFesthalten();
 WBTor.start(boot);
+
+/* ═══════ Hinweise, solange das Terminbuch offen ist ═══════
+   Kein Ersatz für den Kalenderwecker – der arbeitet auch bei geschlossener
+   Seite. Das hier ist für den Arbeitstag am Rechner: einmal je Minute wird
+   nachgesehen, was in der nächsten Viertelstunde ansteht, und je Eintrag
+   höchstens einmal am Tag erinnert. */
+const HINW_LS = 'wb-terminbuch-hinweise', HINW_GEZEIGT = 'wb-terminbuch-gezeigt';
+let hinwAn = false, hinwTakt = null;
+
+function hinwGezeigt(){ try { return JSON.parse(localStorage.getItem(HINW_GEZEIGT) || '{}'); }
+                        catch(e){ return {}; } }
+function hinwMerken(k){
+  const g = hinwGezeigt(); g[k] = heute();
+  const h = heute();
+  Object.keys(g).forEach(x => { if (g[x] !== h) delete g[x]; });
+  try { localStorage.setItem(HINW_GEZEIGT, JSON.stringify(g)); } catch(e){}
+}
+function hinwPruefen(){
+  if (!hinwAn || Notification.permission !== 'granted') return;
+  if (window.WBTor && WBTor.beispiel()) return;      /* keine Hinweise auf Beispieldaten */
+  const jetzt = new Date(), h = heute(), gezeigt = hinwGezeigt();
+  EINTR.forEach(e => {
+    if (e.erledigt || e.datum !== h) return;
+    const k = e.art + ':' + e.id;
+    if (gezeigt[k]) return;
+    let faellig;
+    if (e.von) {
+      const [H, M] = e.von.split(':').map(Number);
+      faellig = new Date(h + 'T00:00:00'); faellig.setHours(H, M);
+    } else {
+      faellig = new Date(h + 'T08:00:00');            /* ganztägig: am Morgen */
+    }
+    const min = (faellig - jetzt) / 60000;
+    if (min > 15 || min < -60) return;
+    const o = orderOf(e.aufId);
+    const wann = e.von ? (min > 1 ? 'in ' + Math.round(min) + ' Minuten' : 'jetzt') : 'heute';
+    try {
+      new Notification(e.titel, {
+        body: wann + (o ? ' · ' + o.name : '') + (e.ort ? ' · ' + e.ort : ''),
+        tag: k, icon: document.querySelector('link[rel="icon"]').href
+      });
+      hinwMerken(k);
+    } catch(err){}
+  });
+}
+async function hinwSchalten(){
+  if (hinwAn) {
+    hinwAn = false;
+    try { localStorage.setItem(HINW_LS, '0'); } catch(e){}
+    clearInterval(hinwTakt); hinwTakt = null;
+    hinwKnopf(); toast('Hinweise aus.');
+    return;
+  }
+  if (!('Notification' in window)) { toast('Dieser Browser kennt keine Hinweise.'); return; }
+  let erlaubt = Notification.permission;
+  if (erlaubt === 'default') erlaubt = await Notification.requestPermission();
+  if (erlaubt !== 'granted') { toast('Ohne Erlaubnis des Browsers geht es nicht.'); return; }
+  hinwAn = true;
+  try { localStorage.setItem(HINW_LS, '1'); } catch(e){}
+  hinwTakt = setInterval(hinwPruefen, 60000);
+  hinwPruefen(); hinwKnopf();
+  toast('Hinweise an – solange diese Seite offen ist.');
+}
+function hinwKnopf(){
+  const b = document.getElementById('hinwBtn');
+  if (!b) return;
+  b.textContent = hinwAn ? 'Hinweise an' : 'Hinweise';
+  b.setAttribute('aria-pressed', String(hinwAn));
+  b.title = hinwAn
+    ? 'Erinnert an Termine dieses Tages, solange die Seite offen ist. Zum Ausschalten anklicken.'
+    : 'Erinnert an Termine dieses Tages, solange die Seite offen ist.';
+}
+function hinwStart(){
+  let gemerkt = '0';
+  try { gemerkt = localStorage.getItem(HINW_LS) || '0'; } catch(e){}
+  if (gemerkt === '1' && 'Notification' in window && Notification.permission === 'granted') {
+    hinwAn = true; hinwTakt = setInterval(hinwPruefen, 60000); hinwPruefen();
+  }
+  hinwKnopf();
+  const b = document.getElementById('hinwBtn');
+  if (b) b.addEventListener('click', hinwSchalten);
+}
+
+hinwStart();
 })();
 </script>
 </body>
