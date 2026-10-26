@@ -572,10 +572,11 @@ html[data-theme="light"]{
 <dialog id="dlgRem"><form class="sheet" method="dialog" id="formRem">
   <header><h3>Erinnerungen importieren</h3><button class="pill icon-btn sm" type="button" data-close aria-label="Schließen">✕</button></header>
   <div class="body">
-    <p class="box" style="margin:0 0 14px">Liest eine Datei aus <b>Erinnerungen</b> (iOS/macOS) und <b>ergänzt</b> den Bestand – nichts wird ersetzt.
+    <p class="box" style="margin:0 0 14px">Liest eine oder mehrere Dateien – oder einen ganzen <b>Ordner</b> – aus <b>Erinnerungen</b> (iOS/macOS) und <b>ergänzt</b> den Bestand – nichts wird ersetzt.
       Geeignet: <b>.ics</b> (Kalenderabo/Export), <b>.csv</b>, <b>.json</b> oder <b>.txt</b> aus einem Kurzbefehl
-      („Erinnerungen suchen“ → Datei sichern). Doppelte (gleicher Titel und Tag) werden erkannt.</p>
-    <button class="pill primary" type="button" id="remPick" style="width:100%">Datei wählen …</button>
+      („Erinnerungen suchen“ → Datei sichern). Doppelte (gleicher Titel und Tag) werden übersprungen, auch zwischen den Dateien.</p>
+    <div style="display:flex;gap:10px;flex-wrap:wrap"><button class="pill primary" type="button" id="remPick" style="flex:1">Dateien wählen …</button><button class="pill primary" type="button" id="remDir" style="flex:1">Ordner wählen …</button></div>
+    <p id="remQuelle" style="margin:10px 0 0;color:var(--text-3);font-size:13px" hidden></p>
     <div id="remPrev" hidden>
       <h4 class="sechd" style="margin-top:18px">Vorschau <span class="opt" id="remCnt"></span></h4>
       <div id="remList" style="max-height:38vh;overflow:auto;border:1px solid var(--line);border-radius:12px;padding:6px 10px"></div>
@@ -593,7 +594,8 @@ html[data-theme="light"]{
     <button class="pill primary" type="submit" id="remGo" disabled>Übernehmen</button>
   </footer>
 </form></dialog>
-<input type="file" id="remInput" accept=".ics,.csv,.json,.txt,text/calendar,text/csv,application/json,text/plain" hidden>
+<input type="file" id="remInput" accept=".ics,.csv,.json,.txt,text/calendar,text/csv,application/json,text/plain" multiple hidden>
+<input type="file" id="remDirInput" webkitdirectory multiple hidden>
 <input type="file" id="ownInput" accept=".json,application/json,text/json,text/plain" hidden>
 <!-- ══════════════════════════════════════════════════════════════
      LIZENZBLOCK  (lizenz.js + lizenz-tor.js + Konfiguration)
@@ -2556,16 +2558,19 @@ function remListeZeichnen(){
       + '<input type="checkbox" data-ri="' + i + '"' + (e.an ? ' checked' : '') + (e.nutzbar ? '' : ' disabled') + ' style="margin-top:4px">'
       + '<span style="min-width:0"><b style="word-break:break-word">' + esc(e.titel) + '</b><br>'
       + '<small style="color:var(--text-3)">' + (e.datum ? esc(remDe.format(new Date(e.datum + 'T12:00:00'))) + (e.zeit ? ' · ' + esc(e.zeit) : '') : 'kein Datum')
-      + (e.liste ? ' · ' + esc(e.liste) : '') + (e.erledigt ? ' · erledigt' : '') + (hint ? ' · <i>' + hint + '</i>' : '') + '</small></span></label>';
+      + (e.liste ? ' · ' + esc(e.liste) : '') + (remItems.some(y => y.quelle !== e.quelle) ? ' · ' + esc(e.quelle) : '') + (e.erledigt ? ' · erledigt' : '') + (hint ? ' · <i>' + hint + '</i>' : '') + '</small></span></label>';
   }).join('');
   $$('#remList [data-ri]').forEach(c => c.addEventListener('change', () => { remItems[+c.dataset.ri].an = c.checked; remZaehler(); }));
   remZaehler();
 }
 function remBewerten(){
   const undat = $('#remUndat').checked, done = $('#remDone').checked;
+  const gesehen = new Set();
   remItems.forEach(e => {
     if (!e.datum && undat) { e.datumEff = heute(); } else e.datumEff = e.datum;
-    e.doppelt = !!e.datumEff && remDoppelt({ datum:e.datumEff, titel:e.titel });
+    const key = e.datumEff + '|' + e.titel.trim().toLowerCase();
+    e.doppelt = !!e.datumEff && (remDoppelt({ datum:e.datumEff, titel:e.titel }) || gesehen.has(key));
+    if (e.datumEff) gesehen.add(key);
     e.nutzbar = !!e.datumEff && !e.doppelt && (done || !e.erledigt);
     if (!e.nutzbar) e.an = false; else if (e._init !== true) e.an = true;
   });
@@ -2586,31 +2591,65 @@ function remFuelleAuf(){
   $('#remAuf').innerHTML = '<option value="">– ohne Auftrag –</option>' + list.map(o => '<option value="' + esc(o.id) + '">' + esc(o.name) + '</option>').join('');
 }
 function remOeffnen(){
-  remItems = []; $('#remPrev').hidden = true; $('#errRem').hidden = true; $('#remGo').disabled = true;
+  remItems = []; $('#remQuelle').hidden = true; $('#remPrev').hidden = true; $('#errRem').hidden = true; $('#remGo').disabled = true;
   if ($('#dlgSrc').open) $('#dlgSrc').close();
   $('#dlgRem').showModal();
 }
 $('#remBtn').addEventListener('click', remOeffnen);
 $('#remFootBtn').addEventListener('click', remOeffnen);
 $('#remPick').addEventListener('click', () => $('#remInput').click());
+const REM_ENDUNG = /\.(ics|csv|json|txt)$/i;
+$('#remDir').addEventListener('click', async () => {
+  if (!('showDirectoryPicker' in window)) { $('#remDirInput').click(); return; }
+  try {
+    const wurzel = await showDirectoryPicker({ mode:'read' });
+    const dateien = [];
+    const gehe = async (dir, pfad) => {
+      for await (const [n, h] of dir.entries()) {
+        if (h.kind === 'directory') await gehe(h, pfad + n + '/');
+        else if (REM_ENDUNG.test(n)) dateien.push({ name:pfad + n, datei:await h.getFile() });
+      }
+    };
+    await gehe(wurzel, '');
+    remLaden(dateien, wurzel.name);
+  } catch(x){ if (x.name !== 'AbortError') { $('#errRem').textContent = 'Ordner konnte nicht gelesen werden.'; $('#errRem').hidden = false; } }
+});
+$('#remDirInput').addEventListener('change', e => {
+  const fs = Array.from(e.target.files || []).filter(f => REM_ENDUNG.test(f.name))
+    .map(f => ({ name:f.webkitRelativePath || f.name, datei:f }));
+  const ordner = fs[0] && fs[0].name.includes('/') ? fs[0].name.split('/')[0] : 'Ordner';
+  e.target.value = ''; remLaden(fs, ordner);
+});
+$('#remInput').addEventListener('change', e => {
+  const fs = Array.from(e.target.files || []).map(f => ({ name:f.name, datei:f }));
+  e.target.value = ''; remLaden(fs, null);
+});
+async function remLaden(dateien, ordner){
+  const err = m => { $('#errRem').textContent = m; $('#errRem').hidden = false; $('#remPrev').hidden = true; $('#remGo').disabled = true; };
+  if (!dateien.length) return err(ordner ? 'Im Ordner „' + ordner + '“ liegt keine .ics-, .csv-, .json- oder .txt-Datei.' : 'Keine Datei gewählt.');
+  dateien.sort((a, b) => a.name.localeCompare(b.name, 'de'));
+  const alle = []; let gelesen = 0, leer = 0;
+  for (const d of dateien) {
+    try {
+      const l = parseErinnerungen(d.name, await d.datei.text()).filter(x => x && x.titel);
+      if (l.length) gelesen++; else leer++;
+      l.forEach(x => alle.push(Object.assign({ an:true, quelle:d.name }, x)));
+    } catch(x){ leer++; }
+  }
+  if (!alle.length) return err('In ' + (ordner ? 'dem Ordner „' + ordner + '“' : 'den Dateien') + ' wurden keine Erinnerungen gefunden.');
+  remItems = alle;
+  const q = $('#remQuelle');
+  q.textContent = (ordner ? 'Ordner „' + ordner + '“ · ' : '') + gelesen + (gelesen === 1 ? ' Datei' : ' Dateien') + ' gelesen'
+    + (leer ? ' · ' + leer + ' ohne Erinnerungen' : ''); q.hidden = false;
+  $('#errRem').hidden = true; remFuelleSelects(); remBewerten(); remListeZeichnen();
+  $('#remPrev').hidden = false;
+}
 $('#remAgb').addEventListener('change', remFuelleAuf);
 $('#remAuf').addEventListener('change', () => {
   const o = orderOf($('#remAuf').value);
   if (o && o.auftraggeberId && !$('#remAgb').value) { $('#remAgb').value = String(o.auftraggeberId); const a = o.id; remFuelleAuf(); $('#remAuf').value = a; }
 });
 ['remDone','remUndat'].forEach(id => $('#' + id).addEventListener('change', () => { remBewerten(); remListeZeichnen(); }));
-$('#remInput').addEventListener('change', async e => {
-  const f = e.target.files && e.target.files[0]; if (!f) return;
-  const err = m => { $('#errRem').textContent = m; $('#errRem').hidden = false; $('#remPrev').hidden = true; $('#remGo').disabled = true; };
-  try {
-    const roh = parseErinnerungen(f.name, await f.text()).filter(x => x && x.titel);
-    if (!roh.length) return err('In „' + f.name + '“ wurden keine Erinnerungen gefunden.');
-    remItems = roh.map(x => Object.assign({ an:true }, x));
-    $('#errRem').hidden = true; remFuelleSelects(); remBewerten(); remListeZeichnen();
-    $('#remPrev').hidden = false;
-  } catch(x){ err('Datei konnte nicht gelesen werden.'); }
-  finally { e.target.value = ''; }
-});
 $('#formRem').addEventListener('submit', e => {
   const wahl = remItems.filter(x => x.an && x.nutzbar);
   if (!wahl.length) { e.preventDefault(); return; }
