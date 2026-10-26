@@ -231,6 +231,8 @@ h1 em{font-style:italic;font-weight:600;background:linear-gradient(94deg,var(--e
 .ag-day .rel.late{color:var(--bad)}
 .ag-day .rel.due{color:var(--warn)}
 .ai{display:flex;align-items:flex-start;gap:11px;padding:11px 16px;border-top:1px solid var(--line)}
+.pr{display:inline-block;font-family:var(--mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;border:1px solid currentColor;border-radius:100px;padding:0 6px;line-height:1.5}
+.pr[data-p="hoch"]{color:var(--bad)}.pr[data-p="mittel"]{color:var(--warn)}.pr[data-p="niedrig"]{color:var(--text-3)}
 .ai .dot{width:9px;height:9px;border-radius:50%;background:var(--c,var(--off));flex:none;margin-top:7px}
 .ai[data-k="termin"]{--c:var(--amber)}
 .ai[data-k="erinnerung"]{--c:var(--info)}
@@ -486,6 +488,9 @@ html[data-theme="light"]{
       <label class="wide">Titel<input name="titel" required maxlength="160" autocomplete="off" placeholder="Abstimmung Schnittstelle"></label>
       <label>Auftraggeber<select name="agb" id="termAgb"></select></label>
       <label>Auftrag<select name="auf" id="termAuf"></select></label>
+      <label id="lblPrio" hidden>Priorität<select name="prio" id="prioSel">
+        <option value="mittel">mittel – in 3 Tagen</option><option value="hoch">hoch – heute</option><option value="niedrig">niedrig – in 7 Tagen</option>
+      </select></label>
       <label>Datum<input name="datum" type="date" required></label>
       <label class="rowlab" id="ganztagsWrap" style="align-self:end;height:42px"><input type="checkbox" name="ganztags" id="ganztags"> ganztägig</label>
       <label id="lblVon">Von<input name="von" type="time"></label>
@@ -530,6 +535,32 @@ html[data-theme="light"]{
   <footer>
     <button class="pill" type="button" data-close>Abbrechen</button>
     <button class="pill primary" type="submit" id="icsGo">Datei erzeugen</button>
+  </footer>
+</form></dialog>
+
+
+<!-- Kommunizieren: Statusmail an den Auftraggeber -->
+<dialog id="dlgMail"><form class="sheet" method="dialog" id="formMail">
+  <header><h3>Kommunizieren</h3><button class="pill icon-btn sm" type="button" data-close aria-label="Schließen">✕</button></header>
+  <div class="body">
+    <h4 class="sechd" style="margin-top:0">Status prüfen</h4>
+    <div class="box" id="mailCheck" style="margin-bottom:14px"></div>
+    <div class="form">
+      <label class="wide">An<input id="mailAn" type="email" autocomplete="off" placeholder="name@firma.de"></label>
+      <label class="wide">Betreff<input id="mailSubj" maxlength="200" autocomplete="off"></label>
+      <label class="rowlab wide"><input type="checkbox" id="mailFm" checked> Fristen und Meilensteine</label>
+      <label class="rowlab wide"><input type="checkbox" id="mailTm" checked> Anstehende Termine (30 Tage)</label>
+      <label class="rowlab wide"><input type="checkbox" id="mailFb" checked> Bitte um Feedback</label>
+      <label class="wide">Text<textarea id="mailText" rows="12" style="font-family:var(--mono);font-size:13.5px"></textarea></label>
+      <label class="rowlab wide"><input type="checkbox" id="mailWv" checked> Wiedervorlage in 7 Tagen anlegen (Rückmeldung nachfassen)</label>
+    </div>
+    <p class="legend" id="mailHint"></p>
+  </div>
+  <footer>
+    <button class="pill" type="button" data-close>Abbrechen</button>
+    <button class="pill" type="button" id="mailNeu" hidden>Text neu erzeugen</button>
+    <button class="pill" type="button" id="mailCopy">Text kopieren</button>
+    <button class="pill primary" type="submit" id="mailGo">Mail öffnen</button>
   </footer>
 </form></dialog>
 
@@ -584,7 +615,7 @@ html[data-theme="light"]{
         <label>Auftraggeber<select id="remAgb"></select></label>
         <label>Auftrag<select id="remAuf"></select></label>
         <label class="rowlab wide"><input type="checkbox" id="remDone" checked> bereits erledigte mit übernehmen (als erledigt)</label>
-        <label class="rowlab wide"><input type="checkbox" id="remUndat"> Einträge ohne Datum auf heute legen</label>
+        <label class="rowlab wide"><input type="checkbox" id="remUndat"> Einträge ohne Datum nach Priorität einplanen (hoch heute, mittel +3, niedrig +7 Tage)</label>
       </div>
     </div>
     <p class="err" id="errRem" hidden></p>
@@ -1270,7 +1301,7 @@ WBTor({
     "wb-terminbuch-export"
   ],
   "schreiben": "#newTerm,#importBtn,#delTerm,#fsOpen,#fsNew,#fsImport,#remBtn,#remFootBtn,#remGo,#formRem,#fsDetach,#abOpen,#asOpen,#reScan,#addHere,#formTerm,[data-done],[data-edit]",
-  "ausgabe": "#exportBtn,#fsExport,#icsBtn,#icsGo,#formIcs",
+  "ausgabe": "#exportBtn,#fsExport,#icsBtn,#icsGo,#formIcs,#mailBtn,#mailGo,#formMail",
   "demo": {
     "wb-auftragsbuch-data": {
       "app": "werkbank-auftragsbuch",
@@ -1683,6 +1714,20 @@ const LEER = {
 let store = structuredClone(LEER);
 let ownHandle = null, ownReady = false, dirty = false, saveT = null;
 
+/* Priorität und Beginn – dieselbe Regel wie im Auftragsstatus:
+   hoch = heute, mittel = in 3 Tagen, niedrig = in 7 Tagen, nie nach der Fälligkeit. */
+const PRIO_TAGE = { hoch:0, mittel:3, niedrig:7 };
+const PRIO_RANG = { hoch:0, mittel:1, niedrig:2 };
+const prioN = p => { const v = String(p == null ? '' : p).toLowerCase();
+  return v === '2' ? 'hoch' : v === '0' ? 'niedrig' : v === '1' ? 'mittel' : (v in PRIO_TAGE ? v : 'mittel'); };
+function beginnAus(prio, basis, faellig){
+  let b = plus(basis, PRIO_TAGE[prioN(prio)]);
+  if (faellig && faellig < b) b = faellig < basis ? basis : faellig;
+  return b;
+}
+const beginnVon = t => (t.beginn && /^\d{4}-\d{2}-\d{2}$/.test(t.beginn)) ? t.beginn
+  : beginnAus(t.prio, String(t.angelegt || heute()).slice(0, 10), t.faellig);
+
 function normTerm(x){
   if (!x || !x.id) return null;
   const art = x.art === 'erinnerung' ? 'erinnerung' : 'termin';
@@ -1693,6 +1738,7 @@ function normTerm(x){
     agbId:String(x.agbId || ''), aufId:String(x.aufId || ''), datum:d,
     von: art === 'erinnerung' ? '' : zt(x.von), bis: art === 'erinnerung' ? '' : zt(x.bis),
     ort:String(x.ort || ''), notiz:String(x.notiz || ''),
+    prio: art === 'erinnerung' ? prioN(x.prio) : '',
     erledigt: typeof x.erledigt === 'string' ? x.erledigt : null,
     angelegt: typeof x.angelegt === 'string' ? x.angelegt : new Date().toISOString() };
 }
@@ -1866,7 +1912,7 @@ let KUNDEN = new Map(), AUFTRAEGE = new Map();
 
 function sammleStamm(){
   const k = new Map();
-  ab.auftraggeber.forEach(c => k.set(String(c.id), { id:String(c.id), name:String(c.name || 'Ohne Namen'), aktiv:c.aktiv !== false, quelle:'ab' }));
+  ab.auftraggeber.forEach(c => k.set(String(c.id), { id:String(c.id), name:String(c.name || 'Ohne Namen'), aktiv:c.aktiv !== false, email:String(c.email || ''), ansprechpartner:String(c.ansprechpartner || ''), quelle:'ab' }));
   store.auftraggeber.forEach(c => { if (!k.has(c.id)) k.set(c.id, Object.assign({ quelle:'eigen' }, c)); });
 
   const a = new Map();
@@ -1889,7 +1935,7 @@ function alleEintraege(){
   store.termine.forEach(t => {
     const o = orderOf(t.aufId);
     out.push({ id:t.id, quelle:'eigen', art:t.art, titel:t.titel, datum:t.datum, von:t.von, bis:t.bis,
-      ort:t.ort, notiz:t.notiz, erledigt:t.erledigt,
+      ort:t.ort, notiz:t.notiz, erledigt:t.erledigt, prio:t.prio || '',
       aufId:t.aufId, agbId:t.aufId && o ? o.auftraggeberId : t.agbId });
   });
   for (const [aufId, inh] of Object.entries(as.inhalte)) {
@@ -1901,7 +1947,7 @@ function alleEintraege(){
       if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return;
       out.push({ id:'frist:' + aufId + ':' + (t.id || d), quelle:'as', art:'frist',
         titel:String(t.text || 'To-do'), datum:d, von:'', bis:'', ort:'',
-        notiz:'Priorität ' + String(t.prio || 'mittel'), erledigt:t.erledigt || null, aufId, agbId });
+        notiz:'', prio:prioN(t.prio), beginn:beginnVon(t), erledigt:t.erledigt || null, aufId, agbId });
     });
     (inh.meilensteine || []).forEach(m => {
       if (!m) return;
@@ -2127,6 +2173,8 @@ function agendaHTML(list){
     if (o) sub.push(esc(o.name) + (c ? ' · ' + esc(c.name) : ''));
     else if (c) sub.push(esc(c.name));
     if (e.ort) sub.push('◎ ' + esc(e.ort));
+    if (e.prio) sub.push('<span class="pr" data-p="' + e.prio + '">' + e.prio + '</span>');
+    if (e.art === 'frist' && e.beginn && !e.erledigt) sub.push((e.beginn <= h ? 'dran seit ' : 'Beginn ') + fmtDate(e.beginn));
     if (e.quelle === 'as') sub.push(KIND[e.art] + ' aus dem Auftragsstatus');
     if (e.erledigt) sub.push('erledigt');
     if (e.notiz && e.art !== 'frist') sub.push(esc(String(e.notiz).replace(/\s+/g, ' ').slice(0, 90)));
@@ -2148,7 +2196,9 @@ function renderDetail(scroll){
   const box = $('#detail');
   const h = heute();
   const sicht = EINTR.filter(sichtbar);
-  const sort = (a, b) => a.datum.localeCompare(b.datum) || String(a.von || '99').localeCompare(String(b.von || '99')) || a.titel.localeCompare(b.titel, 'de');
+  const rang = e => e.prio ? PRIO_RANG[e.prio] : 1;
+  const sort = (a, b) => a.datum.localeCompare(b.datum) || String(a.von || '99').localeCompare(String(b.von || '99'))
+    || rang(a) - rang(b) || a.titel.localeCompare(b.titel, 'de');
 
   if (selAuf !== null) {
     const s = spurListe().find(x => x.id === selAuf);
@@ -2164,6 +2214,7 @@ function renderDetail(scroll){
       + '<div class="sub">' + kommend.length + ' kommend · ' + spaet.length + ' überfällig · ' + s.list.length + ' insgesamt'
       + (s.status ? ' · Auftrag ' + esc(s.status) : '') + '</div></div>'
       + '<div class="d-acts">'
+      + (s.o ? '<button class="pill sm" type="button" id="mailBtn">Kommunizieren</button>' : '')
       + '<button class="pill sm" type="button" id="addHere">+ Termin für diesen Auftrag</button>'
       + '<button class="pill icon-btn sm" type="button" id="closeD" aria-label="Schließen">✕</button>'
       + '</div></div>'
@@ -2172,6 +2223,7 @@ function renderDetail(scroll){
       + (frueher.length ? '<h4 class="sechd" style="margin-top:20px">War <span class="opt">' + frueher.length + '</span></h4>' + agendaHTML(frueher.slice(0, 40)) : '');
     $('#closeD').addEventListener('click', () => { selAuf = null; hitId = null; renderTimeline(); renderDetail(); });
     $('#addHere').addEventListener('click', () => termDlg(null, s.id));
+    const mb = $('#mailBtn'); if (mb) mb.addEventListener('click', () => mailDlg(s));
   } else {
     const offen = sicht.filter(e => !e.erledigt);
     const spaet = offen.filter(e => e.datum < h && (e.art === 'frist' || e.art === 'ms')).sort(sort);
@@ -2234,13 +2286,21 @@ function artUmschalten(){
   const gz = $('#ganztags').checked;
   $('#ganztagsWrap').hidden = er;
   $('#lblOrt').hidden = er;
+  $('#lblPrio').hidden = !er;
   $('#lblVon').hidden = er || gz;
   $('#lblBis').hidden = er || gz;
 }
 $('#artSel').addEventListener('change', artUmschalten);
 $('#ganztags').addEventListener('change', artUmschalten);
 
-let editId = null;
+let editId = null, datumHand = false;
+$('#prioSel').addEventListener('change', () => {
+  if (!datumHand && $('#artSel').value === 'erinnerung') $('#formTerm').elements.datum.value = beginnAus($('#prioSel').value, heute());
+});
+$('#formTerm').elements.datum.addEventListener('input', () => { datumHand = true; });
+$('#artSel').addEventListener('change', () => {
+  if (!datumHand && !editId && $('#artSel').value === 'erinnerung') $('#formTerm').elements.datum.value = beginnAus($('#prioSel').value, heute());
+});
 function termDlg(id, vorAuf){
   editId = id;
   const t = id ? store.termine.find(x => x.id === id) : null;
@@ -2257,6 +2317,8 @@ function termDlg(id, vorAuf){
   E.bis.value = t ? t.bis : '10:00';
   E.ort.value = t ? t.ort : '';
   E.notiz.value = t ? t.notiz : '';
+  E.prio.value = t && t.prio ? t.prio : 'mittel';
+  datumHand = !!t;
   $('#delTerm').hidden = !t;
   artUmschalten();
   $('#dlgTerm').showModal();
@@ -2278,7 +2340,8 @@ $('#formTerm').addEventListener('submit', e => {
   const o = orderOf(aufId);
   const pl = { art, titel, agbId: o ? String(o.auftraggeberId) : $('#termAgb').value, aufId,
     datum:E.datum.value, von:vonZ, bis:bisZ,
-    ort: art === 'erinnerung' ? '' : E.ort.value.trim(), notiz:E.notiz.value.trim() };
+    ort: art === 'erinnerung' ? '' : E.ort.value.trim(), notiz:E.notiz.value.trim(),
+    prio: art === 'erinnerung' ? prioN(E.prio.value) : '' };
   if (editId) Object.assign(store.termine.find(x => x.id === editId), pl);
   else store.termine.push(Object.assign({ id:uid(), erledigt:null, angelegt:new Date().toISOString() }, pl));
   save(); neu(); toast(editId ? 'Gespeichert' : (art === 'erinnerung' ? 'Erinnerung angelegt' : 'Termin angelegt'));
@@ -2447,6 +2510,15 @@ function icsZeit(v, params){
     return { datum:iso(d), zeit:String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0') }; }
   return { datum:m[1] + '-' + m[2] + '-' + m[3], zeit:m[4] + ':' + m[5] };
 }
+function icsPrio(v){ const n = parseInt(v, 10); return !n ? '' : n <= 4 ? 'hoch' : n === 5 ? 'mittel' : 'niedrig'; }
+function freiPrio(v){
+  v = String(v == null ? '' : v).trim().toLowerCase();
+  if (!v || v === 'keine' || v === 'none') return '';
+  if (/^(hoch|high|!!!|3)$/.test(v)) return 'hoch';
+  if (/^(mittel|medium|!!|2)$/.test(v)) return 'mittel';
+  if (/^(niedrig|low|!|1)$/.test(v)) return 'niedrig';
+  return /^\d+$/.test(v) ? icsPrio(v) : '';
+}
 function parseIcs(text){
   const out = [];
   const blocks = icsEntfalten(text).split(/BEGIN:(VTODO|VEVENT)/i).slice(1);
@@ -2466,7 +2538,7 @@ function parseIcs(text){
       datum:zt ? zt.datum : '', zeit:zt ? zt.zeit : '',
       notiz:icsEntesc(f['DESCRIPTION'] && f['DESCRIPTION'].v).trim(),
       ort:icsEntesc(f['LOCATION'] && f['LOCATION'].v).trim(),
-      erledigt:st === 'COMPLETED' || !!f['COMPLETED'], liste:'' });
+      erledigt:st === 'COMPLETED' || !!f['COMPLETED'], liste:'', prio:icsPrio(f['PRIORITY'] && f['PRIORITY'].v) });
   }
   return out;
 }
@@ -2505,14 +2577,14 @@ function parseCsv(text){
         iD = finde('fällig','faellig','due','datum','date','termin'),
         iN = finde('notiz','notes','note','beschreibung','description'),
         iE = finde('erledigt','completed','done','abgeschlossen','status'),
-        iL = finde('liste','list'), iZ = finde('uhrzeit','zeit','time');
+        iL = finde('liste','list'), iZ = finde('uhrzeit','zeit','time'), iP = finde('priorität','prioritaet','priority','prio');
   if (iT < 0) return parseText(text);
   return rows.slice(1).map(r => {
     const d = freiesDatum(r[iD]) || { datum:'', zeit:'' };
     return { titel:(r[iT] || '').trim(), datum:d.datum, zeit:d.zeit || (iZ >= 0 ? (String(r[iZ]).match(/\d{1,2}:\d{2}/) || [''])[0].padStart(5,'0') : ''),
       notiz:iN >= 0 ? (r[iN] || '').trim() : '', ort:'',
       erledigt:iE >= 0 ? (kopf[iE].includes('status') ? /complet|erledigt|done/i.test(r[iE]) : JA(r[iE])) : false,
-      liste:iL >= 0 ? (r[iL] || '').trim() : '' };
+      liste:iL >= 0 ? (r[iL] || '').trim() : '', prio:iP >= 0 ? freiPrio(r[iP]) : '' };
   });
 }
 function parseJson(text){
@@ -2527,7 +2599,7 @@ function parseJson(text){
     return { titel:String(pick(o, 'titel','title','name','summary')).trim(), datum:d.datum, zeit:d.zeit,
       notiz:String(pick(o, 'notiz','notizen','notes','note','beschreibung','description')).trim(), ort:'',
       erledigt:JA(pick(o, 'erledigt','completed','iscompleted','done','is completed')),
-      liste:String(pick(o, 'liste','list','listname')).trim() };
+      liste:String(pick(o, 'liste','list','listname')).trim(), prio:freiPrio(pick(o, 'priorität','prioritaet','priority','prio')) };
   });
 }
 function parseZeile(z){
@@ -2536,7 +2608,10 @@ function parseZeile(z){
   const m = z.match(/(\d{4}-\d{2}-\d{2}(?:[ T]\d{1,2}:\d{2})?|\d{1,2}\.\d{1,2}\.(?:\d{4}|\d{2})(?:[ ,]+(?:um\s+)?\d{1,2}:\d{2})?|\d{1,2}\/\d{1,2}\/(?:\d{4}|\d{2}))/);
   const d = m ? freiesDatum(m[0]) : null;
   let titel = m ? z.replace(m[0], '').replace(/\s*[-–—|;,(]\s*(?:fällig|due)?\s*[)]?\s*$/i, '').replace(/^\s*(?:fällig|due)?:?\s*[-–—|;,]\s*/i, '').trim() : z;
-  return { titel:titel.replace(/\s{2,}/g, ' '), datum:d ? d.datum : '', zeit:d ? d.zeit : '', notiz:'', ort:'', erledigt:erl, liste:'' };
+  let prio = '';
+  const pm = titel.match(/(?:^|\s)(!{1,3})(?=\s|$)/);
+  if (pm) { prio = pm[1].length === 3 ? 'hoch' : pm[1].length === 2 ? 'mittel' : 'niedrig'; titel = titel.replace(pm[0], ' ').trim(); }
+  return { titel:titel.replace(/\s{2,}/g, ' '), datum:d ? d.datum : '', zeit:d ? d.zeit : '', notiz:'', ort:'', erledigt:erl, liste:'', prio };
 }
 function parseText(text){ return text.split(/\r?\n/).filter(x => x.trim()).map(parseZeile); }
 function parseErinnerungen(name, text){
@@ -2553,12 +2628,12 @@ function remDoppelt(e){ return store.termine.some(t => t.datum === e.datum && t.
 function remListeZeichnen(){
   const box = $('#remList');
   box.innerHTML = remItems.map((e, i) => {
-    const hint = e.doppelt ? 'schon vorhanden' : !e.datum ? 'ohne Datum' : '';
+    const hint = e.doppelt ? 'schon vorhanden' : !e.datumEff ? 'ohne Datum' : !e.datum ? 'eingeplant' : '';
     return '<label class="rowlab" style="display:flex;gap:10px;align-items:flex-start;padding:7px 0;border-bottom:1px solid var(--line);opacity:' + (e.nutzbar ? 1 : .5) + '">'
       + '<input type="checkbox" data-ri="' + i + '"' + (e.an ? ' checked' : '') + (e.nutzbar ? '' : ' disabled') + ' style="margin-top:4px">'
       + '<span style="min-width:0"><b style="word-break:break-word">' + esc(e.titel) + '</b><br>'
-      + '<small style="color:var(--text-3)">' + (e.datum ? esc(remDe.format(new Date(e.datum + 'T12:00:00'))) + (e.zeit ? ' · ' + esc(e.zeit) : '') : 'kein Datum')
-      + (e.liste ? ' · ' + esc(e.liste) : '') + (remItems.some(y => y.quelle !== e.quelle) ? ' · ' + esc(e.quelle) : '') + (e.erledigt ? ' · erledigt' : '') + (hint ? ' · <i>' + hint + '</i>' : '') + '</small></span></label>';
+      + '<small style="color:var(--text-3)">' + (e.datumEff ? esc(remDe.format(new Date(e.datumEff + 'T12:00:00'))) + (e.zeit ? ' · ' + esc(e.zeit) : '') : 'kein Datum')
+      + (e.prio ? ' · ' + e.prio : '') + (e.liste ? ' · ' + esc(e.liste) : '') + (remItems.some(y => y.quelle !== e.quelle) ? ' · ' + esc(e.quelle) : '') + (e.erledigt ? ' · erledigt' : '') + (hint ? ' · <i>' + hint + '</i>' : '') + '</small></span></label>';
   }).join('');
   $$('#remList [data-ri]').forEach(c => c.addEventListener('change', () => { remItems[+c.dataset.ri].an = c.checked; remZaehler(); }));
   remZaehler();
@@ -2567,7 +2642,7 @@ function remBewerten(){
   const undat = $('#remUndat').checked, done = $('#remDone').checked;
   const gesehen = new Set();
   remItems.forEach(e => {
-    if (!e.datum && undat) { e.datumEff = heute(); } else e.datumEff = e.datum;
+    if (!e.datum && undat) { e.datumEff = beginnAus(e.prio || 'mittel', heute()); } else e.datumEff = e.datum;
     const key = e.datumEff + '|' + e.titel.trim().toLowerCase();
     e.doppelt = !!e.datumEff && (remDoppelt({ datum:e.datumEff, titel:e.titel }) || gesehen.has(key));
     if (e.datumEff) gesehen.add(key);
@@ -2659,9 +2734,110 @@ $('#formRem').addEventListener('submit', e => {
   wahl.forEach(x => {
     const notiz = [x.zeit ? 'Uhrzeit: ' + x.zeit : '', x.notiz, x.liste ? 'Liste: ' + x.liste : ''].filter(Boolean).join('\n').slice(0, 1200);
     store.termine.push({ id:uid(), art:'erinnerung', titel:x.titel.slice(0, 160), agbId, aufId, datum:x.datumEff,
-      von:'', bis:'', ort:'', notiz, erledigt:x.erledigt ? jetzt : null, angelegt:jetzt });
+      von:'', bis:'', ort:'', notiz, prio:x.prio || 'mittel', erledigt:x.erledigt ? jetzt : null, angelegt:jetzt });
   });
   save({ immediate:true }); neu(); toast(wahl.length + (wahl.length === 1 ? ' Erinnerung' : ' Erinnerungen') + ' importiert');
+});
+
+
+/* ═══════ Kommunizieren ═══════
+   Aus dem Stand eines Auftrags wird ein Mailentwurf: Prozessschritt, Fristen und
+   Meilensteine (aus dem Auftragsstatus), Termine, Bitte um Feedback. Geöffnet wird
+   das Mailprogramm – gesendet wird dort. Gelesen wird nur; geschrieben wird allein
+   die eigene Wiedervorlage. */
+const wtagL = new Intl.DateTimeFormat('de-DE', { weekday:'short' });
+const tagLang = d => wtagL.format(new Date(d + 'T12:00:00')) + ' ' + fmtDate(d);
+const SCHRITT = { geplant:'geplant', aktiv:'aktiv in Bearbeitung', pausiert:'pausiert', abgeschlossen:'abgeschlossen', abgerechnet:'abgeschlossen und abgerechnet' };
+let mailSpur = null, mailVon = false;
+
+function mailDaten(sp){
+  const h = heute(), o = sp.o, c = sp.c;
+  const stamm = ab.auftraggeber.find(x => String(x.id) === String(o.auftraggeberId)) || {};
+  const alle = sp.list;
+  const offenFr = alle.filter(e => e.art === 'frist' && !e.erledigt).sort((a,b) => a.datum.localeCompare(b.datum));
+  const offenMs = alle.filter(e => e.art === 'ms' && !e.erledigt).sort((a,b) => a.datum.localeCompare(b.datum));
+  const doneMs  = alle.filter(e => e.art === 'ms' && e.erledigt).sort((a,b) => b.datum.localeCompare(a.datum)).slice(0, 3);
+  const termine = alle.filter(e => e.art === 'termin' && !e.erledigt && e.datum >= h && e.datum <= plus(h, 30))
+    .sort((a,b) => a.datum.localeCompare(b.datum) || String(a.von).localeCompare(String(b.von)));
+  return { h, o, c, an:String(stamm.email || ''), ansprech:String(stamm.ansprechpartner || ''), offenFr, offenMs, doneMs, termine,
+    spaetFr:offenFr.filter(e => e.datum < h), spaetMs:offenMs.filter(e => e.datum < h) };
+}
+function mailCheckHTML(d){
+  const z = [];
+  z.push('<b>Prozessschritt:</b> ' + esc(d.o.status || '–'));
+  z.push(d.spaetFr.length ? '<span style="color:var(--bad)"><b>' + d.spaetFr.length + ' Frist' + (d.spaetFr.length > 1 ? 'en' : '') + ' überfällig</b></span>' : 'keine Frist überfällig');
+  z.push(d.spaetMs.length ? '<span style="color:var(--bad)"><b>' + d.spaetMs.length + ' Meilenstein' + (d.spaetMs.length > 1 ? 'e' : '') + ' überfällig</b></span>' : 'kein Meilenstein überfällig');
+  z.push(d.offenFr.length + ' offene Fristen · ' + d.offenMs.length + ' offene Meilensteine · ' + d.termine.length + ' Termine in 30 Tagen');
+  if (!d.an) z.push('<span style="color:var(--warn)">Keine E-Mail-Adresse beim Auftraggeber hinterlegt – bitte oben eintragen.</span>');
+  if (asMode === 'keins') z.push('<span style="color:var(--warn)">Auftragsstatus nicht gefunden – Fristen und Meilensteine fehlen.</span>');
+  return z.map(x => '<div>' + x + '</div>').join('');
+}
+function mailText(d, o){
+  const n = [];
+  n.push(d.ansprech ? 'Guten Tag ' + d.ansprech + ',' : 'Guten Tag,');
+  n.push('');
+  n.push('hier ein kurzer Zwischenstand zu „' + d.o.name + '“' + (d.o.projektnummer ? ' (' + d.o.projektnummer + ')' : '') + '.');
+  n.push('');
+  n.push('Stand: ' + (SCHRITT[d.o.status] || d.o.status || '–'));
+  if (o.fm) {
+    if (d.doneMs.length) { n.push(''); n.push('Zuletzt erreicht:'); d.doneMs.forEach(e => n.push('• ' + e.titel + ' (' + fmtDate(/^\d{4}-\d{2}-\d{2}/.test(String(e.erledigt)) ? String(e.erledigt).slice(0,10) : e.datum) + ')')); }
+    if (d.offenMs.length) { n.push(''); n.push('Meilensteine:'); d.offenMs.forEach(e => n.push('• ' + fmtDate(e.datum) + ' – ' + e.titel + (e.datum < d.h ? ' (überfällig)' : ''))); }
+    if (d.offenFr.length) { n.push(''); n.push('Offene Punkte und Fristen:'); d.offenFr.forEach(e => n.push('• ' + fmtDate(e.datum) + ' – ' + e.titel + (e.datum < d.h ? ' (überfällig)' : ''))); }
+  }
+  if (o.tm && d.termine.length) {
+    n.push(''); n.push('Anstehende Termine:');
+    d.termine.forEach(e => n.push('• ' + tagLang(e.datum) + (e.von ? ', ' + e.von + (e.bis ? '–' + e.bis : '') + ' Uhr' : '') + ' – ' + e.titel + (e.ort ? ' (' + e.ort + ')' : '')));
+  }
+  if (o.fb) {
+    n.push(''); n.push('Passt der Stand aus Ihrer Sicht? Gibt es Änderungswünsche oder offene Punkte auf Ihrer Seite? '
+      + 'Über eine kurze Rückmeldung bis ' + fmtDate(plus(d.h, 7)) + ' würde ich mich freuen.');
+  }
+  n.push(''); n.push('Viele Grüße'); n.push('Maik Unverricht');
+  return n.join('\n');
+}
+function mailOpts(){ return { fm:$('#mailFm').checked, tm:$('#mailTm').checked, fb:$('#mailFb').checked }; }
+function mailNeuErzeugen(){
+  if (!mailSpur) return;
+  const d = mailDaten(mailSpur);
+  $('#mailText').value = mailText(d, mailOpts()); mailVon = false; $('#mailNeu').hidden = true;
+}
+function mailDlg(sp){
+  mailSpur = sp;
+  const d = mailDaten(sp);
+  $('#mailCheck').innerHTML = mailCheckHTML(d);
+  $('#mailAn').value = d.an;
+  $('#mailSubj').value = 'Zwischenstand: ' + sp.o.name + (sp.o.projektnummer ? ' (' + sp.o.projektnummer + ')' : '');
+  ['mailFm','mailTm','mailFb'].forEach(i => $('#' + i).checked = true);
+  $('#mailWv').checked = true;
+  mailNeuErzeugen();
+  $('#mailHint').textContent = 'Das Mailprogramm öffnet sich mit diesem Entwurf – gesendet wird erst dort. Bei sehr langem Text wird er gekürzt übergeben; der vollständige liegt dann in der Zwischenablage.';
+  $('#dlgMail').showModal();
+}
+['mailFm','mailTm','mailFb'].forEach(i => $('#' + i).addEventListener('change', () => { if (mailVon) $('#mailNeu').hidden = false; else mailNeuErzeugen(); }));
+$('#mailText').addEventListener('input', () => { mailVon = true; $('#mailNeu').hidden = false; });
+$('#mailNeu').addEventListener('click', mailNeuErzeugen);
+async function kopieren(t){ try { await navigator.clipboard.writeText(t); return true; } catch(e){ return false; } }
+$('#mailCopy').addEventListener('click', async () => {
+  toast(await kopieren($('#mailText').value) ? 'Text kopiert' : 'Kopieren nicht möglich – Text bitte markieren und kopieren.');
+});
+$('#formMail').addEventListener('submit', async () => {
+  const an = $('#mailAn').value.trim(), betr = $('#mailSubj').value.trim(), text = $('#mailText').value;
+  const enc = x => encodeURIComponent(x).replace(/%0A/g, '%0D%0A');
+  const bau = b => 'mailto:' + encodeURIComponent(an).replace(/%40/g, '@') + '?subject=' + enc(betr) + '&body=' + enc(b);
+  let body = text, url = bau(body), gekuerzt = false;
+  while (url.length > 1900 && body.length > 200) {
+    body = body.slice(0, Math.floor(body.length * .9)); gekuerzt = true; url = bau(body.replace(/\n[^\n]*$/, '') + '\n\n[… gekürzt – vollständiger Text in der Zwischenablage]');
+  }
+  if (gekuerzt) await kopieren(text);
+  const a = document.createElement('a'); a.href = url; a.style.display = 'none';
+  document.body.appendChild(a); a.click(); a.remove();
+  if ($('#mailWv').checked && mailSpur && mailSpur.o) {
+    store.termine.push({ id:uid(), art:'erinnerung', titel:'Rückmeldung nachfassen: ' + mailSpur.o.name,
+      agbId:String(mailSpur.o.auftraggeberId || ''), aufId:mailSpur.o.id, datum:plus(heute(), 7), von:'', bis:'', ort:'',
+      notiz:'Statusmail am ' + fmtDate(heute()) + ' vorbereitet' + (an ? ' an ' + an : '') + '.', erledigt:null, angelegt:new Date().toISOString() });
+    save(); neu();
+  }
+  toast(gekuerzt ? 'Mail geöffnet – Text war zu lang, vollständig in der Zwischenablage' : 'Mail geöffnet');
 });
 
 async function fremdOeffnen(dbName, titel, beschr){
