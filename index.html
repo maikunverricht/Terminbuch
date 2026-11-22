@@ -467,6 +467,8 @@ html,body{overflow-x:clip}
 .tb-ev .tx{flex:1;min-width:0}.tb-ev b{display:block;font-size:16px}.tb-ev small{font-size:12px;color:var(--text-3)}
 .tb-ev .art{font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;padding:4px 8px;border-radius:999px;color:var(--c);background:color-mix(in srgb,var(--c) 15%,transparent);white-space:nowrap}
 .tb-ev.done{opacity:.55}.tb-ev.done b{text-decoration:line-through}
+.tb-ev.mit{border-color:color-mix(in srgb,var(--bad) 40%,var(--line))}.tb-ev.mit .zeit{color:var(--bad)}.tb-ev .seit{font-style:normal;color:var(--bad);font-weight:600}
+.tb-chip.mit small{color:var(--bad)}
 .tb-jetzt{position:relative;height:0;margin:6px 0 16px;border-top:2px solid var(--bad)}
 .tb-jetzt span{position:absolute;left:-76px;top:-9px;width:48px;text-align:right;font-family:var(--mono);font-size:11px;color:var(--bad)}
 .tb-jetzt::before{content:"";position:absolute;left:-21px;top:-7px;width:12px;height:12px;border-radius:50%;background:var(--bad)}
@@ -3130,13 +3132,21 @@ const TB_WT = ['Sonntag','Montag','Dienstag','Mittwoch','Donnerstag','Freitag','
 let tbWahl = heute(), tbMon = heute().slice(0, 7), tbWoche = 0, tbUeberAuf = false;
 const tbSort = (a, b) => a.datum.localeCompare(b.datum) || String(a.von || '99').localeCompare(String(b.von || '99')) || a.titel.localeCompare(b.titel, 'de');
 const tbSpaet = e => !e.erledigt && e.datum < heute() && (e.art === 'frist' || e.art === 'ms');
+/* Seit 21.11.2026: Was sich schließen lässt (Erinnerung, Frist, Meilenstein) und noch offen in der
+   Vergangenheit liegt, wandert in Tag, Woche und Monat auf heute – mit „seit …“. Das gespeicherte
+   Datum bleibt unverändert. Termine ohne Abschluss bleiben an ihrem Tag. */
+const tbMit = e => !e.erledigt && e.datum < heute() && (e.art === 'erinnerung' || e.art === 'frist' || e.art === 'ms');
+function tbAm(sicht, s){ const h = heute();
+  if (s === h) return sicht.filter(e => e.datum === s || tbMit(e));
+  return sicht.filter(e => e.datum === s && !(s < h && tbMit(e))); }
+const tbSeit = e => 'seit ' + String(e.datum.slice(8, 10)) + '.' + String(e.datum.slice(5, 7)) + '.';
 function tbSub(e){ const o = orderOf(e.aufId), c = clientOf(e.agbId);
   return [o ? o.name : '', c ? c.name : '', e.ort ? '◎ ' + e.ort : ''].filter(Boolean).map(esc).join(' · ') || (e.quelle === 'as' ? 'aus dem Auftragsstatus' : 'ohne Auftrag'); }
 function tbAttr(e){
   return e.quelle === 'eigen' ? ' type="button" data-edit="' + esc(e.id) + '"'
     : ' href="https://maikunverricht.github.io/Auftragsstatus/' + (e.aufId ? '#a=' + encodeURIComponent(e.aufId) : '') + '" title="Im Auftragsstatus öffnen"';
 }
-const tbTag = (e, cls, inner) => (e.quelle === 'eigen' ? '<button' : '<a') + ' class="' + cls + ' tb-k' + (e.erledigt ? ' done' : '') + '" data-k="' + e.art + '"' + tbAttr(e) + '>' + inner + (e.quelle === 'eigen' ? '</button>' : '</a>');
+const tbTag = (e, cls, inner) => (e.quelle === 'eigen' ? '<button' : '<a') + ' class="' + cls + ' tb-k' + (e.erledigt ? ' done' : '') + (tbMit(e) ? ' mit' : '') + '" data-k="' + e.art + '"' + tbAttr(e) + '>' + inner + (e.quelle === 'eigen' ? '</button>' : '</a>');
 function tbKurz(d){ const x = new Date(d + 'T12:00:00'); return wtag.format(x).replace('.', '') + ' ' + String(x.getDate()).padStart(2, '0') + '.' + String(x.getMonth() + 1).padStart(2, '0') + '.'; }
 
 function tbMonat(){
@@ -3148,9 +3158,9 @@ function tbMonat(){
     + ['Mo','Di','Mi','Do','Fr','Sa','So'].map(w => '<span class="wt">' + w + '</span>').join('');
   for (let i = 0; i < 42; i++) {
     const d = new Date(start); d.setDate(start.getDate() + i); const s = iso(d);
-    const ev = sicht.filter(e => e.datum === s && !e.erledigt);
+    const ev = tbAm(sicht, s).filter(e => !e.erledigt);
     html += '<button type="button" class="tb-tag' + (d.getMonth() !== m - 1 ? ' fremd' : '') + (s === h ? ' heute' : '') + (s === tbWahl && s !== h ? ' wahl' : '')
-      + (d.getDay() % 6 === 0 ? ' we' : '') + (ev.some(tbSpaet) ? ' spaet' : '') + '" data-tag="' + s + '" aria-label="' + fmtDate(s) + (ev.length ? ', ' + ev.length + ' Einträge' : '') + '">'
+      + (d.getDay() % 6 === 0 ? ' we' : '') + (ev.some(e => tbSpaet(e) || (s === h && tbMit(e))) ? ' spaet' : '') + '" data-tag="' + s + '" aria-label="' + fmtDate(s) + (ev.length ? ', ' + ev.length + ' Einträge' : '') + '">'
       + d.getDate() + '<span class="pkt">' + ev.slice(0, 3).map(e => '<i class="tb-k" data-k="' + e.art + '"></i>').join('') + '</span></button>';
   }
   html += '</div><div class="tb-leg">' + [['termin','Termin'],['erinnerung','Erinnerung'],['frist','Frist'],['ms','Meilenstein']]
@@ -3164,7 +3174,7 @@ function tbMonat(){
 function tbTagZeigen(){
   const box = $('#tbTag'); if (!box) return;
   const h = heute(), d = new Date(tbWahl + 'T12:00:00'), rel = tage(tbWahl, h);
-  const sicht = EINTR.filter(sichtbar), ev = sicht.filter(e => e.datum === tbWahl).sort(tbSort);
+  const sicht = EINTR.filter(sichtbar), ev = tbAm(sicht, tbWahl).sort((a, b) => (tbMit(b) - tbMit(a)) || tbSort(a, b));
   const jetzt = new Date(), jz = String(jetzt.getHours()).padStart(2, '0') + ':' + String(jetzt.getMinutes()).padStart(2, '0');
   let html = '<div class="tb-tk"><span class="gross">' + d.getDate() + '</span><span class="wd">' + TB_WT[d.getDay()]
     + '<small>' + TB_MON[d.getMonth()] + ' · ' + (rel === 0 ? 'heute' : rel === 1 ? 'morgen' : rel === -1 ? 'gestern' : rel > 0 ? 'in ' + rel + ' Tagen' : 'vor ' + (-rel) + ' Tagen') + '</small></span>'
@@ -3173,8 +3183,8 @@ function tbTagZeigen(){
   else {
     html += '<div class="tb-ag">'; let linie = tbWahl !== h;
     ev.forEach(e => {
-      if (!linie && (e.von || '99') > jz) { html += '<div class="tb-jetzt"><span>' + jz + '</span></div>'; linie = true; }
-      html += tbTag(e, 'tb-ev', '<span class="zeit">' + (e.von ? esc(e.von) : 'ganzt.') + '</span><span class="tx"><b>' + esc(e.titel) + '</b><small>' + tbSub(e) + '</small></span><span class="art">' + KIND[e.art] + '</span>');
+      if (!linie && !tbMit(e) && (e.von || '99') > jz) { html += '<div class="tb-jetzt"><span>' + jz + '</span></div>'; linie = true; }
+      html += tbTag(e, 'tb-ev', '<span class="zeit">' + (tbMit(e) ? 'offen' : e.von ? esc(e.von) : 'ganzt.') + '</span><span class="tx"><b>' + esc(e.titel) + '</b><small>' + (tbMit(e) ? '<em class="seit">' + tbSeit(e) + ' · ' + relTxt(tage(e.datum, h)) + '</em> · ' : '') + tbSub(e) + '</small></span><span class="art">' + KIND[e.art] + '</span>');
     });
     if (!linie) html += '<div class="tb-jetzt"><span>' + jz + '</span></div>';
     html += '</div>';
@@ -3194,9 +3204,9 @@ function tbWocheZeigen(){
   let html = '<div class="tb-wk"><b>KW ' + kw(d0) + ' · ' + tbKurz(mo) + ' – ' + tbKurz(plus(mo, 6)) + '</b><button type="button" data-w="-1" aria-label="Vorwoche">‹</button>'
     + (tbWoche ? '<button type="button" data-w="0">Heute</button>' : '') + '<button type="button" data-w="1" aria-label="Nächste Woche">›</button></div><div class="tb-woche">';
   for (let i = 0; i < 7; i++) {
-    const s = plus(mo, i), x = new Date(s + 'T12:00:00'), ev = sicht.filter(e => e.datum === s).sort(tbSort);
+    const s = plus(mo, i), x = new Date(s + 'T12:00:00'), ev = tbAm(sicht, s).sort((a, b) => (tbMit(b) - tbMit(a)) || tbSort(a, b));
     html += '<div class="tb-wt' + (s === h ? ' heute' : '') + (i > 4 ? ' we' : '') + '"><h4>' + wtag.format(x).replace('.', '') + ' <b>' + x.getDate() + '</b></h4>'
-      + ev.map(e => tbTag(e, 'tb-chip', '<b>' + esc(e.titel) + '</b><small>' + (e.von ? esc(e.von) : KIND[e.art]) + '</small>')).join('') + '</div>';
+      + ev.map(e => tbTag(e, 'tb-chip', '<b>' + esc(e.titel) + '</b><small>' + (tbMit(e) ? tbSeit(e) : e.von ? esc(e.von) : KIND[e.art]) + '</small>')).join('') + '</div>';
   }
   box.innerHTML = html + '</div>';
   box.querySelectorAll('[data-w]').forEach(b => b.addEventListener('click', () => { tbWoche = +b.dataset.w === 0 ? 0 : tbWoche + (+b.dataset.w); tbWocheZeigen(); }));
